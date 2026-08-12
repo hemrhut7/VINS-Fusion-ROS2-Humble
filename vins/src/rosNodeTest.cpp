@@ -113,8 +113,21 @@ void sync_process()
                 }
             }
             m_buf.unlock();
+            static double last_img_time = -1.0;
             if(!image0.empty())
+            {
+                if (last_img_time > 0 && time <= last_img_time)
+                {
+                    continue;
+                }
+                if (last_img_time > 0 && (time - last_img_time) > 5.0)
+                {
+                    last_img_time = time;
+                    continue;
+                }
+                last_img_time = time;
                 estimator.inputImage(time, image0, image1);
+            }
         }
         else
         {
@@ -142,9 +155,19 @@ void sync_process()
 
 void imu_callback(const sensor_msgs::msg::Imu::SharedPtr imu_msg)
 {
-    // std::cout << "IMU cb" << std::endl;
-
     double t = imu_msg->header.stamp.sec + imu_msg->header.stamp.nanosec * (1e-9);
+    static double last_t = -1.0;
+    if (last_t > 0 && t <= last_t)
+    {
+        return;
+    }
+    if (last_t > 0 && (t - last_t) > 5.0)
+    {
+        last_t = t;
+        return;
+    }
+    last_t = t;
+
     double dx = imu_msg->linear_acceleration.x;
     double dy = imu_msg->linear_acceleration.y;
     double dz = imu_msg->linear_acceleration.z;
@@ -154,7 +177,6 @@ void imu_callback(const sensor_msgs::msg::Imu::SharedPtr imu_msg)
     Vector3d acc(dx, dy, dz);
     Vector3d gyr(rx, ry, rz);
 
-    // std::cout << "got t_imu: " << std::fixed << t << endl;
     estimator.inputIMU(t, acc, gyr);
     return;
 }
@@ -269,15 +291,15 @@ int main(int argc, char **argv)
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu = NULL;
     if(USE_IMU)
     {
-        sub_imu = n->create_subscription<sensor_msgs::msg::Imu>(IMU_TOPIC, rclcpp::QoS(rclcpp::KeepLast(2000)), imu_callback);
+        sub_imu = n->create_subscription<sensor_msgs::msg::Imu>(IMU_TOPIC, rclcpp::QoS(rclcpp::KeepLast(2000)).best_effort(), imu_callback);
     }
-    auto sub_feature = n->create_subscription<sensor_msgs::msg::PointCloud>("/feature_tracker/feature", rclcpp::QoS(rclcpp::KeepLast(2000)), feature_callback);
-    auto sub_img0 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE0_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)), img0_callback);
+    auto sub_feature = n->create_subscription<sensor_msgs::msg::PointCloud>("/feature_tracker/feature", rclcpp::QoS(rclcpp::KeepLast(2000)).best_effort(), feature_callback);
+    auto sub_img0 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE0_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)).best_effort(), img0_callback);
     
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_img1 = NULL;
     if(STEREO)
     {
-        sub_img1 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE1_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)), img1_callback);
+        sub_img1 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE1_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)).best_effort(), img1_callback);
     }
     
     auto sub_restart = n->create_subscription<std_msgs::msg::Bool>("/vins_restart", rclcpp::QoS(rclcpp::KeepLast(100)), restart_callback);

@@ -8,6 +8,7 @@
  *******************************************************/
 
 #include "parameters.h"
+#include <filesystem>
 
 double INIT_DEPTH;
 double MIN_PARALLAX;
@@ -119,6 +120,7 @@ void readParameters(std::string config_file)
     fsSettings["output_path"] >> OUTPUT_FOLDER;
     VINS_RESULT_PATH = OUTPUT_FOLDER + "/vio.csv";
     std::cout << "result path " << VINS_RESULT_PATH << std::endl;
+    std::filesystem::create_directories(OUTPUT_FOLDER);
     std::ofstream fout(VINS_RESULT_PATH, std::ios::out);
     fout.close();
 
