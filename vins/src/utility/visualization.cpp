@@ -35,18 +35,18 @@ size_t pub_counter = 0;
 void registerPub(rclcpp::Node::SharedPtr n)
 {
     tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(n);
-    pub_latest_odometry = n->create_publisher<nav_msgs::msg::Odometry>("imu_propagate", 1000);
-    pub_path = n->create_publisher<nav_msgs::msg::Path>("path", 1000);
-    pub_odometry = n->create_publisher<nav_msgs::msg::Odometry>("odometry", 1000);
-    pub_point_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("point_cloud", 1000);
-    pub_margin_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("margin_cloud", 1000);
-    pub_key_poses = n->create_publisher<visualization_msgs::msg::Marker>("key_poses", 1000);
-    pub_camera_pose = n->create_publisher<nav_msgs::msg::Odometry>("camera_pose", 1000);
-    pub_camera_pose_visual = n->create_publisher<visualization_msgs::msg::MarkerArray>("camera_pose_visual", 1000);
-    pub_keyframe_pose = n->create_publisher<nav_msgs::msg::Odometry>("keyframe_pose", 1000);
-    pub_keyframe_point = n->create_publisher<sensor_msgs::msg::PointCloud>("keyframe_point", 1000);
-    pub_extrinsic = n->create_publisher<nav_msgs::msg::Odometry>("extrinsic", 1000);
-    pub_image_track = n->create_publisher<sensor_msgs::msg::Image>("image_track", 1000);
+    pub_latest_odometry = n->create_publisher<nav_msgs::msg::Odometry>("imu_propagate", 1);
+    pub_path = n->create_publisher<nav_msgs::msg::Path>("path", 1);
+    pub_odometry = n->create_publisher<nav_msgs::msg::Odometry>("odometry", 1);
+    pub_point_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("point_cloud", 1);
+    pub_margin_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("margin_cloud", 1);
+    pub_key_poses = n->create_publisher<visualization_msgs::msg::Marker>("key_poses", 1);
+    pub_camera_pose = n->create_publisher<nav_msgs::msg::Odometry>("camera_pose", 1);
+    pub_camera_pose_visual = n->create_publisher<visualization_msgs::msg::MarkerArray>("camera_pose_visual", 1);
+    pub_keyframe_pose = n->create_publisher<nav_msgs::msg::Odometry>("keyframe_pose", 1);
+    pub_keyframe_point = n->create_publisher<sensor_msgs::msg::PointCloud>("keyframe_point", 1);
+    pub_extrinsic = n->create_publisher<nav_msgs::msg::Odometry>("extrinsic", 1);
+    pub_image_track = n->create_publisher<sensor_msgs::msg::Image>("image_track", 1);
 
     cameraposevisual.setScale(0.1);
     cameraposevisual.setLineWidth(0.01);
@@ -77,17 +77,25 @@ void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, co
 
 void pubTrackImage(const cv::Mat &imgTrack, const double t)
 {
-    std_msgs::msg::Header header;
-    header.frame_id = "world";
+    if (imgTrack.empty()) return;
 
+    sensor_msgs::msg::Image imgTrackMsg;
     int sec_ts = (int)t;
     uint nsec_ts = (uint)((t - sec_ts) * 1e9);
-    header.stamp.sec = sec_ts;
-    header.stamp.nanosec = nsec_ts;
+    imgTrackMsg.header.stamp.sec = sec_ts;
+    imgTrackMsg.header.stamp.nanosec = nsec_ts;
+    imgTrackMsg.header.frame_id = "world";
 
-    // sensor_msgs::msg::ImagePtr 
-    sensor_msgs::msg::Image::SharedPtr imgTrackMsg = cv_bridge::CvImage(header, "bgr8", imgTrack).toImageMsg();
-    pub_image_track->publish(*imgTrackMsg);
+    imgTrackMsg.height = imgTrack.rows;
+    imgTrackMsg.width = imgTrack.cols;
+    imgTrackMsg.encoding = (imgTrack.channels() == 3) ? "bgr8" : "mono8";
+    imgTrackMsg.is_bigendian = false;
+    imgTrackMsg.step = static_cast<sensor_msgs::msg::Image::_step_type>(imgTrack.step);
+    size_t size = imgTrack.step * imgTrack.rows;
+    imgTrackMsg.data.resize(size);
+    memcpy(imgTrackMsg.data.data(), imgTrack.data, size);
+
+    pub_image_track->publish(imgTrackMsg);
 }
 
 

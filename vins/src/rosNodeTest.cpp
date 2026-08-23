@@ -50,23 +50,37 @@ void img1_callback(const sensor_msgs::msg::Image::SharedPtr img_msg)
 // cv::Mat getImageFromMsg(const sensor_msgs::msg::Image::SharedPtr img_msg)
 cv::Mat getImageFromMsg(const sensor_msgs::msg::Image::ConstPtr &img_msg)
 {
-    cv_bridge::CvImageConstPtr ptr;
-    if (img_msg->encoding == "8UC1")
+    cv::Mat img;
+    if (img_msg->encoding == "mono8" || img_msg->encoding == "8UC1")
     {
-        sensor_msgs::msg::Image img;
-        img.header = img_msg->header;
-        img.height = img_msg->height;
-        img.width = img_msg->width;
-        img.is_bigendian = img_msg->is_bigendian;
-        img.step = img_msg->step;
-        img.data = img_msg->data;
-        img.encoding = "mono8";
-        ptr = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::MONO8);
+        cv::Mat raw(img_msg->height, img_msg->width, CV_8UC1, const_cast<uchar*>(img_msg->data.data()), img_msg->step);
+        img = raw.clone();
+    }
+    else if (img_msg->encoding == "bgr8" || img_msg->encoding == "8UC3")
+    {
+        cv::Mat raw(img_msg->height, img_msg->width, CV_8UC3, const_cast<uchar*>(img_msg->data.data()), img_msg->step);
+        cv::cvtColor(raw, img, cv::COLOR_BGR2GRAY);
+    }
+    else if (img_msg->encoding == "rgb8")
+    {
+        cv::Mat raw(img_msg->height, img_msg->width, CV_8UC3, const_cast<uchar*>(img_msg->data.data()), img_msg->step);
+        cv::cvtColor(raw, img, cv::COLOR_RGB2GRAY);
+    }
+    else if (img_msg->encoding == "bgra8")
+    {
+        cv::Mat raw(img_msg->height, img_msg->width, CV_8UC4, const_cast<uchar*>(img_msg->data.data()), img_msg->step);
+        cv::cvtColor(raw, img, cv::COLOR_BGRA2GRAY);
+    }
+    else if (img_msg->encoding == "rgba8")
+    {
+        cv::Mat raw(img_msg->height, img_msg->width, CV_8UC4, const_cast<uchar*>(img_msg->data.data()), img_msg->step);
+        cv::cvtColor(raw, img, cv::COLOR_RGBA2GRAY);
     }
     else
-        ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO8);
-
-    cv::Mat img = ptr->image.clone();
+    {
+        cv::Mat raw(img_msg->height, img_msg->width, CV_8UC1, const_cast<uchar*>(img_msg->data.data()), img_msg->step);
+        img = raw.clone();
+    }
     return img;
 }
 
@@ -81,7 +95,7 @@ void sync_process()
             std_msgs::msg::Header header;
             double time = 0;
             m_buf.lock();
-            if (!img0_buf.empty() && !img1_buf.empty())
+            while (!img0_buf.empty() && !img1_buf.empty())
             {
                 double time0 = img0_buf.front()->header.stamp.sec + img0_buf.front()->header.stamp.nanosec * (1e-9);
                 double time1 = img1_buf.front()->header.stamp.sec + img1_buf.front()->header.stamp.nanosec * (1e-9);
@@ -90,26 +104,27 @@ void sync_process()
                 if(time0 < time1 - 0.003)
                 {
                     img0_buf.pop();
-                    printf("throw img0\n");
                 }
                 else if(time0 > time1 + 0.003)
                 {
                     img1_buf.pop();
-                    printf("throw img1\n");
                 }
                 else
                 {
-                    time = img0_buf.front()->header.stamp.sec + img0_buf.front()->header.stamp.nanosec * (1e-9);
+                    time = time0;
                     header = img0_buf.front()->header;
                     image0 = getImageFromMsg(img0_buf.front());
                     img0_buf.pop();
                     image1 = getImageFromMsg(img1_buf.front());
                     img1_buf.pop();
-                    //printf("find img0 and img1\n");
 
-                    // std::cout << std::fixed << img0_buf.front()->header.stamp.sec + img0_buf.front()->header.stamp.nanosec * (1e-9) << std::endl;
-                    // assert(0);
-                    
+                    // If more frames accumulated in queue while tracking previous frame,
+                    // keep draining to get the freshest real-time synchronized frame!
+                    if (!img0_buf.empty() && !img1_buf.empty())
+                    {
+                        continue;
+                    }
+                    break;
                 }
             }
             m_buf.unlock();
@@ -135,7 +150,7 @@ void sync_process()
             std_msgs::msg::Header header;
             double time = 0;
             m_buf.lock();
-            if(!img0_buf.empty())
+            while(!img0_buf.empty())
             {
                 time = img0_buf.front()->header.stamp.sec + img0_buf.front()->header.stamp.nanosec * (1e-9);
                 header = img0_buf.front()->header;
