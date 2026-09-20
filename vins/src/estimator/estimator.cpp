@@ -243,9 +243,13 @@ bool Estimator::getIMUInterval(double t0, double t1, vector<pair<double, Eigen::
     }
     // printf("get imu from %f %f\n", t0, t1);
     // printf("imu fornt time %f   imu end time %f\n", accBuf.front().first, accBuf.back().first);
+    if(accBuf.front().first > t1)
+    {
+        return false;
+    }
     if(t1 <= accBuf.back().first)
     {
-        while (accBuf.front().first <= t0)
+        while (!accBuf.empty() && accBuf.front().first <= t0)
         {
             // std::cout << "t_imu: " << std::fixed << accBuf.front().first << "  t_0: " << std::fixed << t0 << "   gyr_buf size: " << gyrBuf.size() << std::endl;
             // std::cout << "1) acc pop" << std::endl;
@@ -253,7 +257,7 @@ bool Estimator::getIMUInterval(double t0, double t1, vector<pair<double, Eigen::
             // std::cout << "1) gyr pop" << std::endl;
             gyrBuf.pop();
         }
-        while (accBuf.front().first < t1)
+        while (!accBuf.empty() && accBuf.front().first < t1)
         {
             accVector.push_back(accBuf.front());
             // std::cout << "2) acc pop" << std::endl;
@@ -262,8 +266,15 @@ bool Estimator::getIMUInterval(double t0, double t1, vector<pair<double, Eigen::
             // std::cout << "2) gyr pop" << std::endl;
             gyrBuf.pop();
         }
-        accVector.push_back(accBuf.front());
-        gyrVector.push_back(gyrBuf.front());
+        if (!accBuf.empty())
+        {
+            accVector.push_back(accBuf.front());
+            gyrVector.push_back(gyrBuf.front());
+        }
+        if (accVector.empty())
+        {
+            return false;
+        }
     }
     else
     {
@@ -275,7 +286,7 @@ bool Estimator::getIMUInterval(double t0, double t1, vector<pair<double, Eigen::
 
 bool Estimator::IMUAvailable(double t)
 {
-    if(!accBuf.empty() && t <= accBuf.back().first)
+    if(!accBuf.empty() && accBuf.front().first <= t && t <= accBuf.back().first)
         return true;
     else
         return false;
@@ -295,25 +306,61 @@ void Estimator::processMeasurements()
             feature = featureBuf.front();
             curTime = feature.first + td;
             // std::cout << "t0: " << std::fixed << curTime << std::endl;
-            while(1)
+
+            if (USE_IMU)
             {
-                if ((!USE_IMU  || IMUAvailable(feature.first + td)))
-                    break;
-                else
+                mBuf.lock();
+                if (!accBuf.empty() && curTime < accBuf.front().first)
                 {
-                    printf("wait for imu ... \n");
-                    if (! MULTIPLE_THREAD)
-                        return;
-                    std::chrono::milliseconds dura(5);
-                    std::this_thread::sleep_for(dura);
+                    featureBuf.pop();
+                    mBuf.unlock();
+                    continue;
                 }
+                mBuf.unlock();
+
+                while(1)
+                {
+                    if (IMUAvailable(feature.first + td))
+                        break;
+                    else
+                    {
+                        mBuf.lock();
+                        if (!accBuf.empty() && (feature.first + td) < accBuf.front().first)
+                        {
+                            mBuf.unlock();
+                            break;
+                        }
+                        mBuf.unlock();
+
+                        printf("wait for imu ... \n");
+                        if (! MULTIPLE_THREAD)
+                            return;
+                        std::chrono::milliseconds dura(5);
+                        std::this_thread::sleep_for(dura);
+                    }
+                }
+
+                mBuf.lock();
+                if (!accBuf.empty() && curTime < accBuf.front().first)
+                {
+                    featureBuf.pop();
+                    mBuf.unlock();
+                    continue;
+                }
+                mBuf.unlock();
             }
+
             // cout << "2" << endl;
             mBuf.lock();
             if(USE_IMU)
             {
                 // cout << "2-1)" << endl;
-                getIMUInterval(prevTime, curTime, accVector, gyrVector);
+                if (!getIMUInterval(prevTime, curTime, accVector, gyrVector))
+                {
+                    featureBuf.pop();
+                    mBuf.unlock();
+                    continue;
+                }
                 // cout << "2-2)" << endl;
             }
 
@@ -329,11 +376,23 @@ void Estimator::processMeasurements()
                 {
                     double dt;
                     if(i == 0)
-                        dt = accVector[i].first - prevTime;
+                    {
+                        if (prevTime < 0)
+                            dt = (accVector.size() > 1) ? (accVector[1].first - accVector[0].first) : 0.005;
+                        else
+                            dt = accVector[i].first - prevTime;
+                    }
                     else if (i == accVector.size() - 1)
                         dt = curTime - accVector[i - 1].first;
                     else
                         dt = accVector[i].first - accVector[i - 1].first;
+
+                    if (dt <= 0.0 || dt > 0.2)
+                    {
+                        printf("Warning: invalid IMU dt: %f, clamped to 0.005\n", dt);
+                        dt = 0.005;
+                    }
+
                     processIMU(accVector[i].first, dt, accVector[i].second, gyrVector[i].second);
                 }
             }

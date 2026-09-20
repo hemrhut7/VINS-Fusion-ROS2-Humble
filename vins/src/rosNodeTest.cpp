@@ -29,6 +29,11 @@ queue<sensor_msgs::msg::Image::ConstPtr> img0_buf;
 queue<sensor_msgs::msg::Image::ConstPtr> img1_buf;
 std::mutex m_buf;
 
+#include <atomic>
+
+std::atomic<bool> first_imu_received{false};
+std::atomic<double> first_imu_time{-1.0};
+
 // header: 1403715278
 void img0_callback(const sensor_msgs::msg::Image::SharedPtr img_msg)
 {
@@ -89,6 +94,17 @@ void sync_process()
 {
     while(1)
     {
+        if (USE_IMU && !first_imu_received.load())
+        {
+            m_buf.lock();
+            while (!img0_buf.empty()) img0_buf.pop();
+            while (!img1_buf.empty()) img1_buf.pop();
+            m_buf.unlock();
+            std::chrono::milliseconds dura(5);
+            std::this_thread::sleep_for(dura);
+            continue;
+        }
+
         if(STEREO)
         {
             cv::Mat image0, image1;
@@ -112,6 +128,12 @@ void sync_process()
                 else
                 {
                     time = time0;
+                    if (USE_IMU && time < first_imu_time.load())
+                    {
+                        img0_buf.pop();
+                        img1_buf.pop();
+                        continue;
+                    }
                     header = img0_buf.front()->header;
                     image0 = getImageFromMsg(img0_buf.front());
                     img0_buf.pop();
@@ -153,6 +175,11 @@ void sync_process()
             while(!img0_buf.empty())
             {
                 time = img0_buf.front()->header.stamp.sec + img0_buf.front()->header.stamp.nanosec * (1e-9);
+                if (USE_IMU && time < first_imu_time.load())
+                {
+                    img0_buf.pop();
+                    continue;
+                }
                 header = img0_buf.front()->header;
                 image = getImageFromMsg(img0_buf.front());
                 img0_buf.pop();
@@ -171,6 +198,12 @@ void sync_process()
 void imu_callback(const sensor_msgs::msg::Imu::SharedPtr imu_msg)
 {
     double t = imu_msg->header.stamp.sec + imu_msg->header.stamp.nanosec * (1e-9);
+    if (!first_imu_received.load())
+    {
+        first_imu_time.store(t);
+        first_imu_received.store(true);
+        printf("first imu received with timestamp: %f\n", t);
+    }
     static double last_t = -1.0;
     if (last_t > 0 && t <= last_t)
     {
@@ -238,6 +271,8 @@ void restart_callback(const std_msgs::msg::Bool::SharedPtr restart_msg)
     if (restart_msg->data == true)
     {
         ROS_WARN("restart the estimator!");
+        first_imu_received.store(false);
+        first_imu_time.store(-1.0);
         estimator.clearState();
         estimator.setParameter();
     }
