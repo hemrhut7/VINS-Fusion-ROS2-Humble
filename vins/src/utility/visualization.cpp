@@ -32,6 +32,11 @@ static Vector3d last_path(0.0, 0.0, 0.0);
 
 size_t pub_counter = 0;
 
+namespace
+{
+const Eigen::Vector3d kBaseToImu(0.012, -0.015, 0.0805);
+}
+
 void registerPub(rclcpp::Node::SharedPtr n)
 {
     tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(n);
@@ -150,18 +155,21 @@ void pubOdometry(const Estimator &estimator, const std_msgs::msg::Header &header
         odometry.header = header;
         odometry.header.frame_id = "world";
         odometry.child_frame_id = "base_link";
-        Quaterniond tmp_Q;
-        tmp_Q = Quaterniond(estimator.Rs[WINDOW_SIZE]);
-        odometry.pose.pose.position.x = estimator.Ps[WINDOW_SIZE].x();
-        odometry.pose.pose.position.y = estimator.Ps[WINDOW_SIZE].y();
-        odometry.pose.pose.position.z = estimator.Ps[WINDOW_SIZE].z();
-        odometry.pose.pose.orientation.x = tmp_Q.x();
-        odometry.pose.pose.orientation.y = tmp_Q.y();
-        odometry.pose.pose.orientation.z = tmp_Q.z();
-        odometry.pose.pose.orientation.w = tmp_Q.w();
-        odometry.twist.twist.linear.x = estimator.Vs[WINDOW_SIZE].x();
-        odometry.twist.twist.linear.y = estimator.Vs[WINDOW_SIZE].y();
-        odometry.twist.twist.linear.z = estimator.Vs[WINDOW_SIZE].z();
+        const Matrix3d R_imu = estimator.Rs[WINDOW_SIZE];
+        const Vector3d P_base = estimator.Ps[WINDOW_SIZE] - R_imu * kBaseToImu;
+        const Quaterniond Q_base(R_imu);
+        odometry.pose.pose.position.x = P_base.x();
+        odometry.pose.pose.position.y = P_base.y();
+        odometry.pose.pose.position.z = P_base.z();
+        odometry.pose.pose.orientation.x = Q_base.x();
+        odometry.pose.pose.orientation.y = Q_base.y();
+        odometry.pose.pose.orientation.z = Q_base.z();
+        odometry.pose.pose.orientation.w = Q_base.w();
+        // REP-105: child_frame_id (base_link) twist must be in body frame
+        const Vector3d V_base = R_imu.transpose() * estimator.Vs[WINDOW_SIZE];
+        odometry.twist.twist.linear.x = V_base.x();
+        odometry.twist.twist.linear.y = V_base.y();
+        odometry.twist.twist.linear.z = V_base.z();
         pub_odometry->publish(odometry);
 
         geometry_msgs::msg::PoseStamped pose_stamped;
@@ -170,30 +178,40 @@ void pubOdometry(const Estimator &estimator, const std_msgs::msg::Header &header
         pose_stamped.pose = odometry.pose.pose;
         path.header = header;
         path.header.frame_id = "world";
+        // Bound path size to prevent memory and bandwidth explosion
+        if (path.poses.size() >= 2000)
+            path.poses.erase(path.poses.begin());
         path.poses.push_back(pose_stamped);
         pub_path->publish(path);
 
         // write result to file
-        ofstream foutC(VINS_RESULT_PATH, ios::app);
-        foutC.setf(ios::fixed, ios::floatfield);
-        foutC.precision(0);
-        foutC << header.stamp.sec + header.stamp.nanosec * (1e-9) << ",";
-        foutC.precision(5);
-        foutC << estimator.Ps[WINDOW_SIZE].x() << ","
-              << estimator.Ps[WINDOW_SIZE].y() << ","
-              << estimator.Ps[WINDOW_SIZE].z() << ","
-              << tmp_Q.w() << ","
-              << tmp_Q.x() << ","
-              << tmp_Q.y() << ","
-              << tmp_Q.z() << ","
-              << estimator.Vs[WINDOW_SIZE].x() << ","
-              << estimator.Vs[WINDOW_SIZE].y() << ","
-              << estimator.Vs[WINDOW_SIZE].z() << "," << endl;
-        foutC.close();
+        const Quaterniond Q_imu(R_imu);
+        if (!VINS_RESULT_PATH.empty())
+        {
+            ofstream foutC(VINS_RESULT_PATH, ios::app);
+            if (foutC.is_open())
+            {
+                foutC.setf(ios::fixed, ios::floatfield);
+                foutC.precision(0);
+                foutC << header.stamp.sec + header.stamp.nanosec * (1e-9) << ",";
+                foutC.precision(5);
+                foutC << estimator.Ps[WINDOW_SIZE].x() << ","
+                      << estimator.Ps[WINDOW_SIZE].y() << ","
+                      << estimator.Ps[WINDOW_SIZE].z() << ","
+                      << Q_imu.w() << ","
+                      << Q_imu.x() << ","
+                      << Q_imu.y() << ","
+                      << Q_imu.z() << ","
+                      << estimator.Vs[WINDOW_SIZE].x() << ","
+                      << estimator.Vs[WINDOW_SIZE].y() << ","
+                      << estimator.Vs[WINDOW_SIZE].z() << "," << endl;
+                foutC.close();
+            }
+        }
         Eigen::Vector3d tmp_T = estimator.Ps[WINDOW_SIZE];
         printf("time: %f, t: %f %f %f q: %f %f %f %f \n", header.stamp.sec + header.stamp.nanosec * (1e-9),
                                                           tmp_T.x(), tmp_T.y(), tmp_T.z(),
-                                                          tmp_Q.w(), tmp_Q.x(), tmp_Q.y(), tmp_Q.z());
+                                                          Q_imu.w(), Q_imu.x(), Q_imu.y(), Q_imu.z());
     }
 }
 
@@ -335,15 +353,12 @@ void pubTF(const Estimator &estimator, const std_msgs::msg::Header &header)
     if (!tf_broadcaster)
         return;
 
-    // Offset from base_link to imu_link defined in robot.urdf (xyz="0.012 -0.015 0.0805")
-    Eigen::Vector3d p_base_imu(0.012, -0.015, 0.0805);
-
     // IMU pose in world frame from VINS estimator
     Eigen::Vector3d P_imu = estimator.Ps[WINDOW_SIZE];
     Eigen::Matrix3d R_imu = estimator.Rs[WINDOW_SIZE];
 
     // Compute base_link pose in world frame: P_base = P_imu - R_imu * p_base_imu
-    Eigen::Vector3d P_base = P_imu - R_imu * p_base_imu;
+    Eigen::Vector3d P_base = P_imu - R_imu * kBaseToImu;
     Eigen::Quaterniond Q_base(R_imu);
 
     geometry_msgs::msg::TransformStamped transform;
